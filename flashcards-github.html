@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>Flashcards</title>
+<style>
+  :root{--bg:#fff;--fg:#111;--border:#ccc;--btn:#eee;color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box;}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:Arial,Helvetica,sans-serif;}
+  body{padding:12px;max-width:700px;margin:0 auto;}
+  h1{font-size:1.3em;}
+  .row{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;}
+  button,.item{font-size:1em;padding:10px 14px;border:1px solid var(--border);border-radius:6px;background:var(--btn);color:var(--fg);cursor:pointer;}
+  button:hover,.item:hover{opacity:0.85;}
+  .list{display:flex;flex-direction:column;gap:8px;margin-top:10px;}
+  .item{display:flex;justify-content:space-between;align-items:center;text-align:left;}
+  .item img{width:40px;height:40px;object-fit:cover;border-radius:4px;margin-right:8px;}
+  .item-main{display:flex;align-items:center;flex:1;overflow:hidden;cursor:pointer;}
+  .item-main span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  input,textarea{width:100%;box-sizing:border-box;padding:8px;margin:6px 0;font-size:1em;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);}
+  .inlineForm{border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:10px;}
+  .card-box{border:1px solid var(--border);border-radius:10px;height:min(60vh,420px);display:flex;align-items:center;justify-content:center;text-align:center;padding:16px;margin:14px 0;gap:8px;}
+  .card-box img{width:100%;height:100%;object-fit:contain;}
+  .card-box.split img{width:calc(50% - 4px);}
+  .card-box .text{font-size:1.6em;word-break:break-word;}
+  .muted{opacity:0.6;font-size:0.9em;}
+  .del{color:#c0392b;}
+  .save{background:#4a6cf7;color:#fff;border-color:#4a6cf7;}
+  .overflow{overflow-x:auto;}
+  .drag-handle{cursor:grab;font-size:1.5em;line-height:1;padding:4px 8px;margin-left:6px;touch-action:none;user-select:none;-webkit-user-select:none;}
+  .item.dragging{opacity:0.7;background:rgba(74,108,247,0.15);box-shadow:0 4px 12px rgba(0,0,0,0.25);position:relative;z-index:5;}
+  .topbar{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--bg);margin:0;padding:8px 0;border-bottom:1px solid var(--border);}
+  select{width:100%;box-sizing:border-box;padding:8px;margin:6px 0;font-size:1em;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);}
+  #searchSuggestions{display:flex;flex-direction:column;gap:4px;margin-top:4px;}
+  #searchSuggestions .item{padding:6px 10px;}
+  .item.editing{outline:2px solid var(--accent,#4a6cf7);background:rgba(74,108,247,0.10);}
+  .editing-wrap{border-left:4px solid var(--accent,#4a6cf7);padding-left:8px;margin:6px 0 2px;}
+  .warn{border:1px solid #c0392b;border-radius:8px;padding:12px;background:rgba(192,57,43,0.08);}
+</style>
+</head>
+<body>
+<div id="app"><h1>Flashcards</h1>
+    <div class="row topbar"><button id="addGroupBtn">+ New Group</button><button id="homeEditBtn">✏️ Edit</button></div>
+    <div id="formArea"></div>
+    <input type="text" id="cardSearch" placeholder="🔍 Search cards by name...">
+    <div id="searchSuggestions"></div>
+    <div class="list overflow" id="list"><div class="muted">No groups yet.</div></div>
+    <div class="row"><button class="save" id="saveBtn">💾 Save Changes to File</button></div>
+    <div class="muted" id="saveHint" style="display:none">Saved! Check your Downloads folder for the new timestamped copy (e.g. flashcards_2026-09-25_14-30.html) — that's your latest version.</div></div>
+<script type="application/json" id="dataStore">{"groups":[]}</script>
+<script>
+let tree = JSON.parse(document.getElementById('dataStore').textContent);
+document.documentElement.setAttribute('data-theme', 'light');
+let current = null; // current node object, or null when at home
+let navStack = []; // ancestors of current, for Back/Home navigation
+let editMode = false, learn = null;
+
+function goInto(node){ navStack.push(current); current = node; render(); }
+function goHome(){ navStack = []; current = null; render(); }
+function goBack(){ const prev = navStack.pop(); current = (prev===undefined) ? null : prev; render(); }
+
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstElementChild; }
+function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Flattens every card reachable under `node`, tagging each with the full chain
+// of nodes (relative to `node`) you'd have to enter to reach it. An empty path
+// means the card is directly in `node` already.
+// Counts every card inside `node`, including cards in all nested sub-groups.
+function countCards(node){
+  let n = (node.cards||[]).length;
+  (node.subgroups||[]).forEach(sg => { n += countCards(sg); });
+  return n;
+}
+
+function buildSearchIndex(node){
+  let result = [];
+  (node.cards||[]).forEach(c => result.push({card:c, path:[]}));
+  (node.subgroups||[]).forEach(sg => {
+    buildSearchIndex(sg).forEach(x => result.push({card:x.card, path:[sg, ...x.path]}));
+  });
+  return result;
+}
+function jumpToCard(x){
+  if(x.path.length){
+    x.path.forEach(n => { navStack.push(current); current = n; });
+    render();
+  }
+  if(current && current.cards){
+    scrollHighlight(document.getElementById('cardItem' + current.cards.indexOf(x.card)));
+  }
+}
+// Adds a ≡ handle to a list row. Dragging the handle moves the row up/down;
+// when you let go, the underlying array is reordered to match the screen.
+function addDragHandle(item, obj, list, arr){
+  const h = el('<span class="drag-handle" title="Drag to reorder">≡</span>');
+  item._obj = obj;
+  h.onpointerdown = (e)=>{
+    e.preventDefault();
+    item.classList.add('dragging');
+    const move = (ev)=>{
+      const bar = document.querySelector('.topbar');
+      const topEdge = bar ? bar.getBoundingClientRect().bottom + 20 : 60;
+      if(ev.clientY < topEdge) window.scrollBy(0, -12);
+      else if(ev.clientY > window.innerHeight - 60) window.scrollBy(0, 12);
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const target = under && under.closest ? under.closest('.item') : null;
+      if(!target || target === item || target.parentNode !== list || !target._obj) return;
+      const r = target.getBoundingClientRect();
+      const targetIsAbove = !!(target.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING);
+      // Move the OTHER row around the dragged one, so the dragged row (and its handle) never leaves the page.
+      if(targetIsAbove && ev.clientY < r.top + r.height/2) list.insertBefore(target, item.nextSibling);
+      else if(!targetIsAbove && ev.clientY > r.top + r.height/2) list.insertBefore(target, item);
+    };
+    const up = ()=>{
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', up);
+      item.classList.remove('dragging');
+      const order = [...list.children].filter(c => c._obj).map(c => c._obj);
+      arr.splice(0, arr.length, ...order);
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', up);
+  };
+  item.appendChild(h);
+}
+
+function openForm(anchorItem){
+  if(anchorItem){
+    anchorItem.classList.add('editing');
+    const wrapper = el('<div class="editing-wrap"></div>');
+    anchorItem.parentNode.insertBefore(wrapper, anchorItem);
+    return {area: wrapper, close: ()=>{ anchorItem.classList.remove('editing'); wrapper.remove(); }};
+  }
+  const area = document.getElementById('formArea');
+  return {area, close: ()=>{ area.innerHTML = ''; }};
+}
+function scrollHighlight(elm){
+  if(!elm) return;
+  elm.scrollIntoView({behavior:'smooth', block:'center'});
+  elm.style.outline = '3px solid #4a6cf7';
+  setTimeout(()=>{ elm.style.outline=''; }, 1500);
+}
+function cardImages(c){
+  if(c.images) return c.images;
+  if(c.imageType && c.imageType !== 'none') return [{type:c.imageType, url:c.imageUrl||'', data:c.imageData||''}];
+  return [];
+}
+function imgSrcList(c){
+  return cardImages(c).map(im => im.type==='file' ? (im.data||'') : (im.type==='url' ? (im.url||'') : '')).filter(Boolean);
+}
+
+function resizeImage(file, maxDim=1400, quality=0.87){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      const img = new Image();
+      img.onload = ()=>{
+        let {width, height} = img;
+        if(width > maxDim || height > maxDim){
+          if(width > height){ height = Math.round(height * maxDim / width); width = maxDim; }
+          else { width = Math.round(width * maxDim / height); height = maxDim; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function saveChanges(){
+  document.getElementById('dataStore').textContent = JSON.stringify(tree);
+  const htmlStr = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+  const blob = new Blob([htmlStr], {type:'text/html'});
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `flashcards_${stamp}.html`;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+function render(){
+  editMode = false;
+  if(!current) renderHome(); else renderNode();
+}
+
+function saveBar(){
+  return `<div class="row"><button class="save" id="saveBtn">💾 Save Changes to File</button></div>
+    <div class="muted" id="saveHint" style="display:none">Saved! Check your Downloads folder for the new timestamped copy (e.g. flashcards_2026-09-25_14-30.html) — that's your latest version.</div>`;
+}
+function wireSave(){
+  document.getElementById('saveBtn').onclick = ()=>{
+    saveChanges();
+    const h = document.getElementById('saveHint'); h.style.display='block';
+  };
+}
+
+function renderHome(){
+  const app = document.getElementById('app');
+  app.innerHTML = `<h1>Flashcards</h1>
+    <div class="row topbar"><button id="addGroupBtn">+ New Group</button><button id="homeEditBtn">✏️ Edit</button></div>
+    <div id="formArea"></div>
+    <input type="text" id="cardSearch" placeholder="🔍 Search cards by name...">
+    <div id="searchSuggestions"></div>
+    <div class="list overflow" id="list"></div>
+    ${saveBar()}`;
+  const list = document.getElementById('list');
+  if(tree.groups.length===0) list.appendChild(el('<div class="muted">No groups yet.</div>'));
+  tree.groups.forEach((g, idx)=>{
+    const item = el(`<div class="item"><div class="item-main"><span>📁 ${esc(g.name)} <span class="muted">(${countCards(g)})</span></span></div></div>`);
+    item.id = 'groupItem' + idx;
+    if(g.hidden) item.style.opacity = '0.5';
+    item.querySelector('.item-main').onclick = ()=> goInto(g);
+    if(editMode){
+      const btns = el('<span></span>');
+      const renBtn = el('<button>Rename</button>'); renBtn.onclick = ()=> showRenameForm(g, item);
+      const mvBtn = el('<button>Move</button>'); mvBtn.onclick = ()=> showMoveNodeForm(g, tree.groups, item);
+      const delBtn = el('<button class="del">Delete</button>'); delBtn.onclick = ()=> showDeleteConfirm(tree.groups, g, g.name, item);
+      btns.append(renBtn, mvBtn, delBtn); item.appendChild(btns);
+    }
+    const hideWrap = el(`<label style="display:flex;align-items:center;gap:4px;white-space:nowrap;"><input type="checkbox" ${g.hidden?'checked':''}> <span class="muted">Hide</span></label>`);
+    hideWrap.querySelector('input').onchange = (e)=>{ g.hidden = e.target.checked; renderHome(); };
+    item.appendChild(hideWrap);
+    addDragHandle(item, g, list, tree.groups);
+    list.appendChild(item);
+  });
+
+  document.getElementById('homeEditBtn').onclick = ()=>{ editMode = !editMode; renderHome(); };
+
+  const searchIndex = buildSearchIndex({cards:[], subgroups:tree.groups});
+  const searchInput = document.getElementById('cardSearch');
+  const suggestBox = document.getElementById('searchSuggestions');
+  searchInput.oninput = ()=>{
+    const q = searchInput.value.trim().toLowerCase();
+    suggestBox.innerHTML = '';
+    if(!q) return;
+    searchIndex.filter(x => (x.card.text||'').toLowerCase().startsWith(q)).forEach(x=>{
+      const pathLabel = x.path.map(n=>esc(n.name)).join(' › ');
+      const sug = el(`<div class="item"><span>${esc(x.card.text||'(no text)')}${pathLabel?` <span class="muted">— in ${pathLabel}</span>`:''}</span></div>`);
+      sug.onclick = ()=>{ searchInput.value=''; suggestBox.innerHTML=''; jumpToCard(x); };
+      suggestBox.appendChild(sug);
+    });
+  };
+
+  document.getElementById('addGroupBtn').onclick = ()=>{
+    document.getElementById('formArea').innerHTML = `<div class="inlineForm">
+      <input id="newGroupName" type="text" placeholder="Group name" autofocus>
+      <div class="row"><button id="saveGroup">Create</button><button id="cancelGroup">Cancel</button></div></div>`;
+    document.getElementById('cancelGroup').onclick = ()=>{ document.getElementById('formArea').innerHTML=''; };
+    document.getElementById('saveGroup').onclick = ()=>{
+      const val = document.getElementById('newGroupName').value.trim();
+      if(!val) return;
+      tree.groups.push({name:val, cards:[], subgroups:[]});
+      renderHome();
+    };
+  };
+  wireSave();
+}
+
+function renderNode(){
+  const node = current;
+  if(!node.subgroups) node.subgroups = [];
+  if(!node.cards) node.cards = [];
+  const subgroups = node.subgroups;
+  const cards = node.cards;
+  cards.sort((a,b)=> (a.text||'').toLowerCase().localeCompare((b.text||'').toLowerCase()));
+  const app = document.getElementById('app');
+  app.innerHTML = `<h1>${esc(node.name)}</h1>
+    <div class="row topbar">
+      <button id="homeBtn">🏠 Home</button>
+      <button id="backBtn">⬅ Back</button>
+      <button id="learnBtn">▶ Learn</button>
+      <button id="editBtn">✏️ Edit</button>
+      <button id="addBtn">➕ Add</button>
+    </div>
+    <div id="formArea"></div>
+    <input type="text" id="cardSearch" placeholder="🔍 Search cards by name...">
+    <div id="searchSuggestions"></div>
+    <div class="list overflow" id="list"></div>
+    ${saveBar()}`;
+  const list = document.getElementById('list');
+  if(subgroups.length===0 && cards.length===0) list.appendChild(el('<div class="muted">Empty.</div>'));
+
+  subgroups.forEach((sg, sgIdx)=>{
+    const item = el(`<div class="item"><div class="item-main"><span>📂 ${esc(sg.name)}</span></div></div>`);
+    item.id = 'subgroupItem' + sgIdx;
+    if(sg.hidden) item.style.opacity = '0.5';
+    if(editMode){
+      const btns = el('<span></span>');
+      const rBtn = el('<button>Rename</button>'); rBtn.onclick = ()=> showRenameForm(sg, item);
+      const dBtn = el('<button class="del">Delete</button>'); dBtn.onclick = ()=> showDeleteConfirm(node.subgroups, sg, sg.name, item);
+      const mvBtn = el('<button>Move</button>'); mvBtn.onclick = ()=> showMoveNodeForm(sg, node.subgroups, item);
+      btns.append(rBtn, mvBtn, dBtn); item.appendChild(btns);
+    } else {
+      item.querySelector('.item-main').onclick = ()=> goInto(sg);
+    }
+    const hideWrap = el(`<label style="display:flex;align-items:center;gap:4px;white-space:nowrap;"><input type="checkbox" ${sg.hidden?'checked':''}> <span class="muted">Hide</span></label>`);
+    hideWrap.querySelector('input').onchange = (e)=>{ sg.hidden = e.target.checked; renderNode(); };
+    item.appendChild(hideWrap);
+    addDragHandle(item, sg, list, subgroups);
+    list.appendChild(item);
+  });
+
+  cards.forEach((c, idx)=>{
+    const srcs = imgSrcList(c);
+    const thumb = srcs.map(s=>`<img src="${esc(s)}">`).join('');
+    const item = el(`<div class="item"><div class="item-main">${thumb}<span>${esc(c.text||'(no text)')}</span></div></div>`);
+    item.id = 'cardItem' + idx;
+    if(c.hidden) item.style.opacity = '0.5';
+    item.querySelectorAll('img').forEach(imgEl=>{
+      imgEl.onerror = ()=>{ imgEl.replaceWith(el('<span title="Image failed to load">⚠️</span>')); };
+    });
+    const hideWrap = el(`<label style="display:flex;align-items:center;gap:4px;white-space:nowrap;"><input type="checkbox" ${c.hidden?'checked':''}> <span class="muted">Hide</span></label>`);
+    hideWrap.querySelector('input').onchange = (e)=>{ c.hidden = e.target.checked; renderNode(); };
+    item.appendChild(hideWrap);
+    if(editMode){
+      const btns = el('<span></span>');
+      const eBtn = el('<button>Edit</button>'); eBtn.onclick = ()=> showCardForm(cards, c, item);
+      const mBtn = el('<button>Move</button>'); mBtn.onclick = ()=> showMoveForm(cards, c, item);
+      const dBtn = el('<button class="del">Delete</button>'); dBtn.onclick = ()=> showDeleteConfirm(cards, c, c.text||'this card', item);
+      btns.append(eBtn, mBtn, dBtn); item.appendChild(btns);
+    }
+    list.appendChild(item);
+  });
+
+  document.getElementById('homeBtn').onclick = ()=> goHome();
+  document.getElementById('backBtn').onclick = ()=> goBack();
+  document.getElementById('learnBtn').onclick = ()=> startLearn(node);
+  document.getElementById('editBtn').onclick = ()=>{ editMode=!editMode; renderNode(); };
+  document.getElementById('addBtn').onclick = ()=> showAddForm(node, cards);
+  wireSave();
+
+  const searchIndex = buildSearchIndex(node);
+  const searchInput = document.getElementById('cardSearch');
+  const suggestBox = document.getElementById('searchSuggestions');
+  searchInput.oninput = ()=>{
+    const q = searchInput.value.trim().toLowerCase();
+    suggestBox.innerHTML = '';
+    if(!q) return;
+    searchIndex.filter(x => (x.card.text||'').toLowerCase().startsWith(q)).forEach(x=>{
+      const pathLabel = x.path.map(n=>esc(n.name)).join(' › ');
+      const sug = el(`<div class="item"><span>${esc(x.card.text||'(no text)')}${pathLabel?` <span class="muted">— in ${pathLabel}</span>`:''}</span></div>`);
+      sug.onclick = ()=>{ searchInput.value=''; suggestBox.innerHTML=''; jumpToCard(x); };
+      suggestBox.appendChild(sug);
+    });
+  };
+}
+
+function showDeleteConfirm(arr, obj, label, anchorItem){
+  const {area, close} = openForm(anchorItem);
+  area.innerHTML = `<div class="inlineForm warn">
+      <p>Delete "${esc(label)}" and everything inside it? This cannot be undone.</p>
+      <div class="row"><button id="confirmDel">Yes, Delete</button><button id="cancelDel">Cancel</button></div></div>`;
+  area.querySelector('#cancelDel').onclick = close;
+  area.querySelector('#confirmDel').onclick = ()=>{
+    const i = arr.indexOf(obj); if(i>-1) arr.splice(i,1);
+    if(current) renderNode(); else renderHome();
+  };
+}
+
+function showRenameForm(sg, anchorItem){
+  const {area, close} = openForm(anchorItem);
+  area.innerHTML = `<div class="inlineForm">
+      <input id="renameInput" type="text" value="${esc(sg.name)}" autofocus>
+      <div class="row"><button id="saveRename">Save</button><button id="cancelRename">Cancel</button></div></div>`;
+  area.querySelector('#cancelRename').onclick = close;
+  area.querySelector('#saveRename').onclick = ()=>{
+    const val = area.querySelector('#renameInput').value.trim();
+    if(!val) return;
+    sg.name = val;
+    if(current) renderNode(); else renderHome();
+  };
+}
+
+function showAddForm(node, cards){
+  const area = document.getElementById('formArea');
+  area.innerHTML = `<div class="row"><button id="addCardBtn">Add Card</button><button id="addSubBtn">Add Sub-group</button></div>`;
+  document.getElementById('addCardBtn').onclick = ()=> showCardForm(cards, null);
+  document.getElementById('addSubBtn').onclick = ()=>{
+    area.innerHTML = `<div class="inlineForm">
+      <input id="newSubName" type="text" placeholder="Sub-group name" autofocus>
+      <div class="row"><button id="saveSub">Create</button><button id="cancelSub">Cancel</button></div></div>`;
+    document.getElementById('cancelSub').onclick = ()=>{ area.innerHTML=''; };
+    document.getElementById('saveSub').onclick = ()=>{
+      const val = document.getElementById('newSubName').value.trim();
+      if(!val) return;
+      node.subgroups.push({name:val, cards:[], subgroups:[]});
+      renderNode();
+    };
+  };
+}
+
+function imageSlotHtml(idx, existingImg){
+  const urlVal = existingImg && existingImg.type==='url' ? esc(existingImg.url) : '';
+  const hint = existingImg ? ' (leave blank to keep the current one)' : '';
+  const removeOpt = existingImg ? `<label style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+    <input type="checkbox" id="cardImgRemove${idx}"> <span class="muted">Remove this image</span></label>` : '';
+  return `<div style="margin-top:10px;">
+    <label>Image ${idx+1} URL${hint}</label>
+    <input id="cardImgUrl${idx}" type="text" placeholder="https://..." value="${urlVal}">
+    <label>Or upload a file for Image ${idx+1} (works fully offline)</label>
+    <input id="cardImgFile${idx}" type="file" accept="image/*">
+    ${removeOpt}
+  </div>`;
+}
+
+function showCardForm(cardsArr, existing, anchorItem){
+  const {area, close} = openForm(anchorItem);
+  const existingImages = existing ? cardImages(existing) : [];
+  area.innerHTML = `<div id="cardForm" class="inlineForm">
+      <label>Text side</label>
+      <textarea id="cardText" rows="2">${esc(existing?existing.text:'')}</textarea>
+      ${imageSlotHtml(0, existingImages[0])}
+      ${imageSlotHtml(1, existingImages[1])}
+      <div class="muted">You can add up to 2 images; if both are set, they'll show side by side.</div>
+      <div class="row"><button type="button" id="saveCardBtn">Save</button><button type="button" id="cancelForm">Cancel</button></div>
+    </div>`;
+  area.querySelector('#cancelForm').onclick = close;
+
+  async function resolveSlot(idx, existingImg){
+    const file = area.querySelector('#cardImgFile'+idx).files[0];
+    const url = area.querySelector('#cardImgUrl'+idx).value.trim();
+    const removeEl = area.querySelector('#cardImgRemove'+idx);
+    if(file) return {type:'file', data: await resizeImage(file)};
+    if(url) return {type:'url', url};
+    if(removeEl && removeEl.checked) return null;
+    return existingImg || null;
+  }
+
+  area.querySelector('#saveCardBtn').onclick = async ()=>{
+    const text = area.querySelector('#cardText').value.trim();
+    const btn = area.querySelector('#saveCardBtn');
+    const anyFile = area.querySelector('#cardImgFile0').files[0] || area.querySelector('#cardImgFile1').files[0];
+    if(anyFile){ btn.textContent = 'Processing image(s)...'; btn.disabled = true; }
+    try{
+      const img1 = await resolveSlot(0, existingImages[0]);
+      const img2 = await resolveSlot(1, existingImages[1]);
+      const images = [img1, img2].filter(Boolean);
+      if(existing){
+        existing.text = text; existing.images = images;
+        delete existing.imageType; delete existing.imageUrl; delete existing.imageData;
+      } else {
+        cardsArr.push({text, images});
+      }
+      renderNode();
+    } catch(e){
+      alert('Could not process one of the images.');
+      btn.textContent = 'Save'; btn.disabled = false;
+    }
+  };
+}
+
+function collectCards(node){
+  let all = (node.cards||[]).slice();
+  (node.subgroups||[]).forEach(sg=>{ if(!sg.hidden) all = all.concat(collectCards(sg)); });
+  return all.filter(c=>!c.hidden);
+}
+
+function flattenAllNodes(nodes, prefix){
+  let result = [];
+  nodes.forEach(n=>{
+    const label = prefix + n.name;
+    result.push({node:n, label});
+    result = result.concat(flattenAllNodes(n.subgroups||[], label + ' › '));
+  });
+  return result;
+}
+
+function collectDescendants(node){
+  let r = [node];
+  (node.subgroups||[]).forEach(sg => { r = r.concat(collectDescendants(sg)); });
+  return r;
+}
+
+// Moves a group or sub-group (with everything inside it) to another place.
+// parentArr is the array that currently holds it (tree.groups or a node's subgroups).
+function showMoveNodeForm(nodeToMove, parentArr, anchorItem){
+  const {area, close} = openForm(anchorItem);
+  const blocked = collectDescendants(nodeToMove); // can't move something into itself
+  let dests = [{label:'🏠 Home (top level)', node:null}];
+  flattenAllNodes(tree.groups, '').forEach(x=>{
+    if(!blocked.includes(x.node)) dests.push({label:x.label, node:x.node});
+  });
+  dests = dests.filter(d => (d.node ? d.node.subgroups : tree.groups) !== parentArr); // not where it already is
+  if(dests.length === 0){
+    area.innerHTML = `<div class="inlineForm"><p class="muted">There is nowhere else to move this.</p>
+      <div class="row"><button id="cancelMoveNode">Close</button></div></div>`;
+    area.querySelector('#cancelMoveNode').onclick = close;
+    return;
+  }
+  const options = dests.map((d,i)=> `<option value="${i}">${esc(d.label)}</option>`).join('');
+  area.innerHTML = `<div class="inlineForm">
+    <label>Move "${esc(nodeToMove.name)}" (with everything inside it) to:</label>
+    <select id="moveNodeTarget">${options}</select>
+    <div class="row"><button id="confirmMoveNode">Move</button><button id="cancelMoveNode">Cancel</button></div>
+  </div>`;
+  area.querySelector('#cancelMoveNode').onclick = close;
+  area.querySelector('#confirmMoveNode').onclick = ()=>{
+    const d = dests[Number(area.querySelector('#moveNodeTarget').value)];
+    const destArr = d.node ? (d.node.subgroups || (d.node.subgroups = [])) : tree.groups;
+    const i = parentArr.indexOf(nodeToMove); if(i>-1) parentArr.splice(i,1);
+    destArr.push(nodeToMove);
+    if(current) renderNode(); else renderHome();
+  };
+}
+
+function showMoveForm(cardsArr, card, anchorItem){
+  const {area, close} = openForm(anchorItem);
+  const allNodes = flattenAllNodes(tree.groups, '').filter(x => x.node !== current);
+  if(allNodes.length === 0){
+    area.innerHTML = `<div class="inlineForm"><p class="muted">No other group to move this card to.</p>
+      <div class="row"><button id="cancelMove">Close</button></div></div>`;
+    area.querySelector('#cancelMove').onclick = close;
+    return;
+  }
+  const options = allNodes.map((x,i)=> `<option value="${i}">${esc(x.label)}</option>`).join('');
+  area.innerHTML = `<div class="inlineForm">
+    <label>Move "${esc(card.text||'this card')}" to:</label>
+    <select id="moveTarget">${options}</select>
+    <div class="row"><button id="confirmMove">Move</button><button id="cancelMove">Cancel</button></div>
+  </div>`;
+  area.querySelector('#cancelMove').onclick = close;
+  area.querySelector('#confirmMove').onclick = ()=>{
+    const target = allNodes[Number(area.querySelector('#moveTarget').value)].node;
+    const i = cardsArr.indexOf(card); if(i>-1) cardsArr.splice(i,1);
+    if(!target.cards) target.cards = [];
+    target.cards.push(card);
+    renderNode();
+  };
+}
+
+function startLearn(node){
+  const deck0 = collectCards(node);
+  if(deck0.length===0){
+    document.getElementById('formArea').innerHTML = '<div class="muted">No cards to learn here yet.</div>';
+    return;
+  }
+  const deck = deck0.map(c=>({c,r:Math.random()})).sort((a,b)=>a.r-b.r).map(x=>x.c);
+  learn = {name:node.name, deck, index:0, showImage:true};
+  renderLearn();
+}
+
+function renderLearn(){
+  const {deck, index, showImage} = learn;
+  const c = deck[index];
+  const srcs = imgSrcList(c);
+  const splitClass = srcs.length===2 ? ' split' : '';
+  const content = showImage
+    ? (srcs.length ? srcs.map(s=>`<img src="${esc(s)}">`).join('') : '<div class="muted">(no image)</div>')
+    : `<div class="text">${esc(c.text||'(no text)')}</div>`;
+  document.getElementById('app').innerHTML = `<h1>Learning: ${esc(learn.name)}</h1>
+    <div class="muted">Card ${index+1} of ${deck.length}</div>
+    <div class="card-box${splitClass}">${content}</div>
+    <div class="row"><button id="flipBtn">🔄 Flip Card</button></div>
+    <div class="row">
+      <button id="prevBtn" ${index===0?'disabled':''}>◀ Previous</button>
+      <button id="nextBtn" ${index===deck.length-1?'disabled':''}>Next ▶</button>
+      <button id="homeBtn2">🏠 Return Home</button>
+    </div>`;
+  document.getElementById('flipBtn').onclick = ()=>{ learn.showImage=!learn.showImage; renderLearn(); };
+  document.getElementById('prevBtn').onclick = ()=>{ if(learn.index>0){ learn.index--; learn.showImage=true; renderLearn(); } };
+  document.getElementById('nextBtn').onclick = ()=>{ if(learn.index<deck.length-1){ learn.index++; learn.showImage=true; renderLearn(); } };
+  document.getElementById('homeBtn2').onclick = ()=>{ learn=null; goHome(); };
+  document.querySelectorAll('.card-box img').forEach((learnImg, i)=>{
+    const imgMeta = cardImages(c)[i];
+    learnImg.onerror = ()=>{
+      const why = imgMeta && imgMeta.type==='url'
+        ? 'This is a linked image — it needs internet to load, or the link may not point directly to an image file.'
+        : 'The uploaded image data seems to be missing or corrupted.';
+      learnImg.outerHTML = `<div class="muted">⚠️ Image failed to load.<br>${why}</div>`;
+    };
+  });
+}
+
+render();
+</script>
+
+
+</body></html>
