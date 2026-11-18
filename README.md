@@ -1,4 +1,4 @@
-This is a HTML app that runs on any browser except on anything on IOS.
+This is a HTML app that runs on any browser except on IOS system.
 
 This is a local app that stores all your data localy, you only need the browser to run it, but it works without internet if you want it to.
 
