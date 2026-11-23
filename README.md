@@ -1,6 +1,6 @@
 # About the App
 
-This is a browser-based HTML app that works on most modern browsers, with some limitations on iOS.
+This is a browser-based HTML app that works on most modern browsers, with some limitations on iOS. The app is also optimalized for both computer and mobile phone use.
 
 ### How it works
 
@@ -12,7 +12,7 @@ The app runs entirely locally in your browser and stores all your data on your d
 2. Open the HTML file in your favourite browser.
 3. Start creating groups, adding cards, and exploring the available features!
 
-**Note for iOS users:** You will need an HTML reader app to open and run the file.
+**Note for iOS users:** You will need a HTML reader app to open and run the file.
 
 ### Adding Images
 
@@ -40,3 +40,8 @@ This creates a new version of the app containing your latest changes. Each saved
 ### Credits
 
 The original concept and design were created by me, while the code was developed with the assistance of **Claude AI**.
+
+<img width="820" height="842" alt="Screenshot flashcards" src="https://github.com/user-attachments/assets/4bd050b6-500b-46e8-ac78-8c05fad3d96a" />
+
+Credit for the image to www.naturfoto.cz
+
