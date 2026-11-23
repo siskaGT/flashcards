@@ -41,7 +41,8 @@ This creates a new version of the app containing your latest changes. Each saved
 
 The original concept and design were created by me, while the code was developed with the assistance of **Claude AI**.
 
-<img width="820" height="842" alt="Screenshot flashcards" src="https://github.com/user-attachments/assets/4bd050b6-500b-46e8-ac78-8c05fad3d96a" />
+### Showcase
 
-Credit for the image to www.naturfoto.cz
+<img width="764" height="677" alt="Screenshot_23-11-2026_212940_" src="https://github.com/user-attachments/assets/73ee2105-ceb0-438b-adbb-5639f3207e8e" />
 
+<img width="764" height="677" alt="Screenshot_23-11-2026_213034_" src="https://github.com/user-attachments/assets/2c2d466a-0c51-44d5-8fa3-9670a15ef2e5" />
